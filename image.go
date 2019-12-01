@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"log"
 )
 
 var (
@@ -156,4 +157,59 @@ func (c *Conn) ReadAvailableImages() ([]*Image, error) {
 	}
 
 	return images, nil
+}
+
+// OnImageScannedEvent allow caller to do something on each image scanned
+type OnImageScannedEvent func(index int, image *Image) error
+
+// BatchReadImagesToDisk reads all available image from the connection.
+func (c *Conn) BatchReadImagesToDisk(onImageScanned OnImageScannedEvent) (int, error) {
+	defer c.Cancel()
+
+	var (
+		keepFetching = true
+	)
+
+	count := 0
+	for keepFetching {
+		m := Image{}
+		for {
+			f, err := c.ReadFrame()
+			if err != nil {
+				if err == ErrEmpty && count > 0 {
+					// This is expected in multi-page scenarios and signals
+					// there are no more pages to come.
+					keepFetching = false
+					break
+				}
+
+				// Other errors are returned
+				return count, err
+			}
+			count++
+			switch f.Format {
+			case FrameGray, FrameRgb, FrameRed:
+				m.fs[0] = f
+			case FrameGreen:
+				m.fs[1] = f
+			case FrameBlue:
+				m.fs[2] = f
+			default:
+				return count, fmt.Errorf("unknown frame type %d", f.Format)
+			}
+			if f.IsLast {
+				if onImageScanned != nil {
+					err := onImageScanned(count, &m)
+					if err != nil {
+						log.Println("on image scanned event error:", err)
+						return count, err
+					}
+				}
+
+				break
+			}
+		}
+	}
+
+	return count, nil
 }
